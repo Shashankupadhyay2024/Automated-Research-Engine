@@ -1,312 +1,301 @@
-"""
-Research Engine - Google Scholar with Selenium
-Uses real browser automation to bypass Google Scholar bot detection
-Reliable, works consistently
-"""
-
 import streamlit as st
+import requests
+from bs4 import BeautifulSoup
 import time
 from datetime import datetime
 import json
+from urllib.parse import quote
+import pandas as pd
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.lib import colors
 import io
-from typing import List, Dict
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-import urllib.parse
 
-try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.lib import colors
-except:
-    pass
+# Page config
+st.set_page_config(
+    page_title="Atlas Research Engine",
+    page_icon="🔍",
+    layout="wide"
+)
 
-st.set_page_config(page_title="Research Engine", page_icon="📚", layout="wide")
-
+# Custom styling
 st.markdown("""
     <style>
-    body { background-color: #0e1319; color: #e9eef4; }
-    .main { background-color: #0e1319; }
-    .stTextInput > div > div > input { background-color: #151b23; color: #e9eef4; border-color: #2e3945; }
-    .stButton > button { background-color: #e8b34a; color: #191203; font-weight: 600; border-radius: 5px; }
-    .stButton > button:hover { background-color: #d19b33; }
-    .stSuccess { background-color: rgba(55, 211, 154, 0.12); color: #37d39a; }
-    .stError { background-color: rgba(255, 107, 99, 0.12); color: #ff6b63; }
-    .stWarning { background-color: rgba(255, 193, 7, 0.12); color: #ffc107; }
-    .stInfo { background-color: #1b222c; color: #b6c0cc; }
-    h1, h2, h3 { color: #e9eef4; }
+    .main {
+        max-width: 1200px;
+    }
+    .stTabs [data-baseweb="tab-list"] button {
+        font-size: 18px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
+st.title("🔍 Atlas Research Engine")
+st.markdown("Search Google Scholar and export your findings as PDF reports")
 
-class GoogleScholarSearch:
-    def __init__(self):
-        self.articles = []
-        self.driver = None
+# Headers for requests (to mimic browser)
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
 
-    def init_driver(self):
-        """Initialize Selenium WebDriver with options to avoid detection"""
-        chrome_options = Options()
+def search_google_scholar(query, num_results=10):
+    """
+    Search Google Scholar using web scraping (no Selenium needed)
+    """
+    results = []
 
-        # Don't make it headless - Google Scholar blocks headless browsers
-        # chrome_options.add_argument("--headless")
+    try:
+        # Google Scholar URL
+        url = f"https://scholar.google.com/scholar?q={quote(query)}&hl=en&num={num_results}"
 
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
+        # Make request
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
 
-        try:
-            self.driver = webdriver.Chrome(options=chrome_options)
-        except:
-            st.error("Chrome driver not found. Install it with: pip install chromedriver-binary")
-            return False
-        return True
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-    def search(self, query: str, num_results: int = 10, status_callback=None) -> List[Dict]:
-        """Search Google Scholar for papers"""
+        # Find all result divs
+        result_divs = soup.find_all('div', class_='gs_ri')
 
-        try:
-            if not self.init_driver():
-                return None
-
-            if status_callback:
-                status_callback("Opening Google Scholar...")
-
-            # Navigate to Google Scholar
-            self.driver.get("https://scholar.google.com/")
-
-            # Wait for page to load
-            time.sleep(2)
-
-            # Find search box and enter query
+        for result in result_divs[:num_results]:
             try:
-                search_box = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.NAME, "q"))
-                )
-                search_box.send_keys(query)
+                # Extract title and link
+                title_elem = result.find('h3', class_='gs_ct')
+                if not title_elem:
+                    continue
 
-                if status_callback:
-                    status_callback("Searching...")
+                link_elem = title_elem.find('a')
+                title = link_elem.text if link_elem else "No title"
+                link = link_elem['href'] if link_elem else ""
 
-                search_box.submit()
-                time.sleep(3)
-
-            except Exception as e:
-                st.error(f"Search box error: {str(e)}")
-                return None
-
-            # Extract results
-            articles = self.extract_results(num_results, status_callback)
-
-            self.driver.quit()
-            self.driver = None
-
-            return articles
-
-        except Exception as e:
-            st.error(f"Search Error: {str(e)}")
-            if self.driver:
-                self.driver.quit()
-            return None
-
-    def extract_results(self, num_results: int, status_callback=None) -> List[Dict]:
-        """Extract article information from Google Scholar results"""
-
-        articles = []
-
-        try:
-            if status_callback:
-                status_callback("Extracting results...")
-
-            # Find all result divs
-            results = self.driver.find_elements(By.CLASS_NAME, "gs_ri")
-
-            for idx, result in enumerate(results[:num_results]):
-                try:
-                    # Title and link
-                    title_elem = result.find_element(By.TAG_NAME, "h3")
-                    link_elem = title_elem.find_element(By.TAG_NAME, "a")
-                    title = link_elem.text
-                    link = link_elem.get_attribute("href")
-
-                    # Authors and publication info
-                    info_elem = result.find_element(By.CLASS_NAME, "gs_a")
+                # Extract authors, publication, year
+                info_elem = result.find('div', class_='gs_a')
+                if info_elem:
                     info_text = info_elem.text
-
-                    # Try to parse: "Authors - Publication - Year"
-                    parts = info_text.split(" - ")
+                    parts = info_text.split(' - ')
                     authors = parts[0] if len(parts) > 0 else "Unknown"
                     publication = parts[1] if len(parts) > 1 else "Unknown"
                     year = parts[2] if len(parts) > 2 else "Unknown"
+                else:
+                    authors = "Unknown"
+                    publication = "Unknown"
+                    year = "Unknown"
 
-                    # Abstract/Summary
-                    try:
-                        abstract_elem = result.find_element(By.CLASS_NAME, "gs_rs")
-                        abstract = abstract_elem.text
-                    except:
-                        abstract = "No abstract available"
+                # Extract abstract/snippet
+                abstract_elem = result.find('div', class_='gs_rs')
+                abstract = abstract_elem.text if abstract_elem else "No abstract available"
 
-                    summary = (abstract[:250] + "...") if len(abstract) > 250 else abstract
+                results.append({
+                    'title': title,
+                    'authors': authors,
+                    'publication': publication,
+                    'year': year,
+                    'abstract': abstract,
+                    'link': link
+                })
 
-                    article = {
-                        'title': title,
-                        'authors': authors,
-                        'publication': publication,
-                        'year': year,
-                        'abstract': abstract,
-                        'link': link,
-                        'summary': summary
-                    }
+                # Be respectful - small delay between requests
+                time.sleep(0.5)
 
-                    articles.append(article)
+            except Exception as e:
+                st.warning(f"Error parsing result: {str(e)}")
+                continue
 
-                except Exception as e:
-                    continue
+        return results
 
-            return articles if articles else None
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Search failed: {str(e)}")
+        st.info("💡 Tip: Google Scholar might block automated requests. Try again in a moment or use a simpler query.")
+        return []
 
-        except Exception as e:
-            st.error(f"Extraction Error: {str(e)}")
-            return None
+def create_pdf_report(results, query):
+    """
+    Create a PDF report from search results
+    """
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
+    story = []
+    styles = getSampleStyleSheet()
 
-    def generate_pdf(self) -> bytes:
-        """Generate PDF report"""
-        if not self.articles:
-            return None
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1f77b4'),
+        spaceAfter=30,
+        alignment=1  # Center
+    )
 
-        try:
-            pdf_buffer = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
-            styles = getSampleStyleSheet()
-            story = []
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#1f77b4'),
+        spaceAfter=12,
+        spaceBefore=12
+    )
 
-            title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=20,
-                textColor=colors.HexColor('#e8b34a'),
-                spaceAfter=12,
-            )
+    # Title
+    story.append(Paragraph(f"📚 Research Report: {query}", title_style))
+    story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+    story.append(Spacer(1, 0.3*inch))
 
-            story.append(Paragraph("Research Summary", title_style))
-            story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
-            story.append(Paragraph(f"Source: Google Scholar | Total Papers: {len(self.articles)}", styles['Normal']))
-            story.append(Spacer(1, 0.3*inch))
+    # Summary
+    story.append(Paragraph(f"<b>Total Results Found:</b> {len(results)}", styles['Normal']))
+    story.append(Spacer(1, 0.2*inch))
 
-            for idx, article in enumerate(self.articles, 1):
-                story.append(Paragraph(f"<b>{idx}. {article['title']}</b>", styles['Heading2']))
-                story.append(Paragraph(
-                    f"<b>Authors:</b> {article['authors']}<br/>"
-                    f"<b>Publication:</b> {article['publication']}<br/>"
-                    f"<b>Year:</b> {article['year']}",
-                    styles['Normal']
-                ))
+    # Results
+    for idx, paper in enumerate(results, 1):
+        story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", heading_style))
+        story.append(Paragraph(f"<b>Authors:</b> {paper['authors']}", styles['Normal']))
+        story.append(Paragraph(f"<b>Publication:</b> {paper['publication']}", styles['Normal']))
+        story.append(Paragraph(f"<b>Year:</b> {paper['year']}", styles['Normal']))
 
-                story.append(Paragraph(f"<b>Summary:</b> {article['summary']}", styles['Normal']))
+        if paper['link']:
+            story.append(Paragraph(f"<b>Link:</b> <a href='{paper['link']}'>View Paper</a>", styles['Normal']))
 
-                if article['link']:
-                    story.append(Paragraph(f"<a href='{article['link']}'>📄 Read Full Paper</a>", styles['Normal']))
+        story.append(Paragraph(f"<b>Abstract:</b> {paper['abstract'][:300]}...", styles['Normal']))
+        story.append(Spacer(1, 0.15*inch))
 
-                story.append(Spacer(1, 0.15*inch))
-                if idx < len(self.articles):
-                    story.append(Paragraph("<hr/>", styles['Normal']))
+    # Build PDF
+    doc.build(story)
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
-            doc.build(story)
-            pdf_buffer.seek(0)
-            return pdf_buffer.getvalue()
-        except:
-            return None
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Settings")
+    num_results = st.slider("Number of results", 5, 20, 10)
 
+    st.markdown("---")
+    st.markdown("### About")
+    st.markdown("""
+    **Atlas Research Engine** searches Google Scholar and exports findings as PDF reports.
 
-def main():
-    st.title("📚 Research Engine - Google Scholar")
-    st.markdown("Search Google Scholar for peer-reviewed papers")
+    **Note:** Web scraping has limitations. If searches fail, try:
+    - Simpler queries
+    - Waiting a few minutes
+    - Checking your internet connection
+    """)
 
-    with st.sidebar:
-        st.markdown("### ⚙️ Settings")
-        query = st.text_input("Search topic", placeholder="machine learning")
-        num_results = st.slider("Results", 5, 20, 10)
+# Main search interface
+col1, col2 = st.columns([3, 1])
 
-        st.divider()
-        st.info("💡 **How it works:**\n- Opens Google Scholar in a browser\n- Searches for your query\n- Extracts paper titles, authors, and abstracts\n- Generates PDF with links")
+with col1:
+    query = st.text_input(
+        "🔍 What would you like to research?",
+        placeholder="e.g., machine learning, climate change, quantum computing...",
+        label_visibility="collapsed"
+    )
 
-    if query and st.button("🔍 Search", use_container_width=True):
-        search = GoogleScholarSearch()
+with col2:
+    search_button = st.button("Search", use_container_width=True, type="primary")
 
-        progress = st.progress(0)
-        status = st.empty()
+# Search and display results
+if search_button and query:
+    with st.spinner(f"🔍 Searching Google Scholar for '{query}'..."):
+        results = search_google_scholar(query, num_results)
 
-        def update_status(msg):
-            status.text(msg)
+    if results:
+        st.success(f"✅ Found {len(results)} results!")
 
-        with st.spinner("Searching Google Scholar..."):
-            progress.progress(25)
-            articles = search.search(query, num_results, status_callback=update_status)
-            progress.progress(100)
-            status.empty()
+        # Display results in tabs
+        tab1, tab2, tab3 = st.tabs(["📄 View Results", "📊 Summary", "⬇️ Export"])
 
-        if articles is None:
-            # Error already shown
-            pass
-        elif articles:
-            st.success(f"✅ Found {len(articles)} papers!")
+        with tab1:
+            st.markdown("### Search Results")
+            for idx, paper in enumerate(results, 1):
+                with st.expander(f"**{idx}. {paper['title'][:80]}...**", expanded=(idx==1)):
+                    st.markdown(f"**Authors:** {paper['authors']}")
+                    st.markdown(f"**Publication:** {paper['publication']}")
+                    st.markdown(f"**Year:** {paper['year']}")
+
+                    if paper['link']:
+                        st.markdown(f"[🔗 View Paper]({paper['link']})")
+
+                    st.markdown(f"**Abstract:** {paper['abstract']}")
+
+        with tab2:
+            st.markdown("### Summary Statistics")
+
+            # Extract years and count
+            years = [p['year'] for p in results if p['year'] != 'Unknown']
 
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Papers", len(articles))
+                st.metric("Total Papers", len(results))
             with col2:
-                years = [int(a['year']) for a in articles if a['year'].isdigit()]
-                st.metric("Avg Year", int(sum(years)/len(years)) if years else "-")
+                st.metric("With Links", sum(1 for p in results if p['link']))
             with col3:
-                st.metric("Source", "Google Scholar")
+                if years:
+                    st.metric("Avg Year", f"{sum(int(y) for y in years if y.isdigit()) / len([y for y in years if y.isdigit()]):.0f}")
 
-            st.divider()
+            # Results table
+            st.markdown("### All Results Table")
+            df = pd.DataFrame([
+                {
+                    'Title': p['title'][:50] + '...' if len(p['title']) > 50 else p['title'],
+                    'Authors': p['authors'][:40] + '...' if len(p['authors']) > 40 else p['authors'],
+                    'Year': p['year'],
+                    'Publication': p['publication'][:30] + '...' if len(p['publication']) > 30 else p['publication']
+                }
+                for p in results
+            ])
+            st.dataframe(df, use_container_width=True)
 
-            for idx, article in enumerate(articles, 1):
-                with st.expander(f"{idx}. {article['title'][:70]}"):
-                    st.caption(f"👥 {article['authors']}")
-                    st.caption(f"📖 {article['publication']} ({article['year']})")
-                    st.markdown(f"**Abstract**\n\n{article['summary']}")
-                    if article['link']:
-                        st.markdown(f"[📄 Read Full Paper]({article['link']})")
+        with tab3:
+            st.markdown("### Export Options")
 
-            st.divider()
-
-            col1, col2 = st.columns(2)
-            search.articles = articles
-
-            with col1:
-                pdf = search.generate_pdf()
-                if pdf:
+            # PDF Export
+            st.subheader("📑 PDF Report")
+            if st.button("Generate PDF Report", use_container_width=True):
+                with st.spinner("Generating PDF..."):
+                    pdf_buffer = create_pdf_report(results, query)
                     st.download_button(
-                        "📄 PDF Report",
-                        pdf,
-                        f"research_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        "application/pdf",
+                        label="⬇️ Download PDF Report",
+                        data=pdf_buffer,
+                        file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
                         use_container_width=True
                     )
 
-            with col2:
-                json_data = json.dumps(articles, indent=2)
-                st.download_button(
-                    "📊 JSON Data",
-                    json_data,
-                    f"research_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    "application/json",
-                    use_container_width=True
-                )
-        else:
-            st.error("❌ No papers found")
+            # JSON Export
+            st.subheader("📋 JSON Data")
+            json_data = json.dumps(results, indent=2)
+            st.download_button(
+                label="⬇️ Download JSON",
+                data=json_data,
+                file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
 
+            # CSV Export
+            st.subheader("📊 CSV Spreadsheet")
+            df_export = pd.DataFrame(results)
+            csv_data = df_export.to_csv(index=False)
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=csv_data,
+                file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
-if __name__ == "__main__":
-    main()
+    else:
+        st.warning("❌ No results found. Try a different search term.")
+
+else:
+    st.info("👉 Enter a search query and click 'Search' to begin!")
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center'>
+    <p>Built with ❤️ using Streamlit | Powered by Google Scholar</p>
+</div>
+""", unsafe_allow_html=True)
