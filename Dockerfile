@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY streamlit_app_web_scraper.py app.py
+COPY streamlit_app_local.py app.py
 COPY .streamlit/ .streamlit/
 
 EXPOSE 8080
