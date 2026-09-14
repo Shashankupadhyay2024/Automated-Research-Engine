@@ -1,4 +1,11 @@
+[client]
+showErrorDetails = true
+
 [server]
-port = 8080
 headless = true
+enableXsrfProtection = true
 enableCORS = false
+maxUploadSize = 200
+
+[logger]
+level = "info"
