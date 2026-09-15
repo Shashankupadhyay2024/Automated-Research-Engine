@@ -1,19 +1,18 @@
 import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import time
 import json
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib import colors
 import io
 from urllib.parse import quote
+import sqlite3
 
 st.set_page_config(
     page_title="Atlas Research Engine",
@@ -49,22 +48,74 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Header with gradient
+# Initialize session state
+if 'pdf_history' not in st.session_state:
+    st.session_state.pdf_history = []
+if 'pdf_buffer' not in st.session_state:
+    st.session_state.pdf_buffer = None
+if 'pdf_filename' not in st.session_state:
+    st.session_state.pdf_filename = None
+
+# Database setup
+DB_PATH = "/tmp/atlas_research_history.db"
+
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS pdf_history
+                     (id INTEGER PRIMARY KEY, query TEXT, num_results INTEGER, 
+                      created_date TIMESTAMP, file_name TEXT)''')
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def save_pdf_to_history(query, num_results, file_name):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('INSERT INTO pdf_history (query, num_results, created_date, file_name) VALUES (?, ?, ?, ?)',
+                  (query, num_results, datetime.now(), file_name))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def get_pdf_history():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT query, num_results, created_date, file_name FROM pdf_history ORDER BY created_date DESC LIMIT 50')
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except:
+        return []
+
+def delete_old_pdfs():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        cutoff_date = datetime.now() - timedelta(days=30)
+        c.execute('DELETE FROM pdf_history WHERE created_date < ?', (cutoff_date,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+init_db()
+delete_old_pdfs()
+
+# Header
 st.markdown('<div class="header-text">🔍 Atlas Research Engine</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-text">Discover & Export Academic Research from Google Scholar</div>', unsafe_allow_html=True)
 
 def search_google_scholar_selenium(query, num_results=10):
-    """Open browser, search Google Scholar, extract results"""
     results = []
-
     try:
-        # Create Chrome driver with proper container configuration
         options = webdriver.ChromeOptions()
-        
-        # Use Chromium from Playwright image
         options.binary_location = "/usr/bin/chromium"
-
-        # Essential for containers
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -74,39 +125,26 @@ def search_google_scholar_selenium(query, num_results=10):
         options.add_argument("--disable-web-resources")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-breakpad")
-        options.add_argument("--disable-client-side-phishing-detection")
-        options.add_argument("--disable-component-extensions-with-background-pages")
         options.add_argument("--disable-default-apps")
         options.add_argument("--disable-hang-monitor")
         options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-prompt-on-repost")
         options.add_argument("--disable-sync")
-        options.add_argument("--metrics-recording-only")
         options.add_argument("--mute-audio")
-        options.add_argument("--no-default-browser-check")
         options.add_argument("--no-first-run")
         options.add_argument("--start-maximized")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-        # Disable images/CSS to speed up
+        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36")
         options.add_argument("--blink-settings=imagesEnabled=false")
 
         driver = webdriver.Chrome(options=options)
 
         try:
             st.info(f"🔍 Opening Google Scholar and searching for '{query}'...")
-
-            # Navigate to Google Scholar
             scholar_url = f"https://scholar.google.com/scholar?q={quote(query)}&num={num_results}"
             driver.get(scholar_url)
-
-            # Wait for results to load
             time.sleep(3)
-
             st.info("📄 Extracting paper information...")
 
-            # Get all result containers
             result_containers = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
 
             if not result_containers:
@@ -115,12 +153,10 @@ def search_google_scholar_selenium(query, num_results=10):
 
             for result in result_containers[:num_results]:
                 try:
-                    # Title and link
                     title_elem = result.find_element(By.CSS_SELECTOR, "h3 a")
                     title = title_elem.text
                     link = title_elem.get_attribute("href")
 
-                    # Authors, publication, year
                     info_elem = result.find_element(By.CSS_SELECTOR, "div.gs_a")
                     info_text = info_elem.text
                     parts = [p.strip() for p in info_text.split(' - ')]
@@ -129,7 +165,6 @@ def search_google_scholar_selenium(query, num_results=10):
                     publication = parts[1] if len(parts) > 1 else "Unknown"
                     year = parts[2] if len(parts) > 2 else "Unknown"
 
-                    # Abstract
                     try:
                         abstract_elem = result.find_element(By.CSS_SELECTOR, "div.gs_rs")
                         abstract = abstract_elem.text
@@ -144,11 +179,9 @@ def search_google_scholar_selenium(query, num_results=10):
                         'abstract': abstract,
                         'link': link
                     })
-
                     time.sleep(0.5)
 
                 except Exception as e:
-                    st.warning(f"Error extracting paper: {str(e)[:50]}")
                     continue
 
         finally:
@@ -158,115 +191,94 @@ def search_google_scholar_selenium(query, num_results=10):
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-        st.info("Make sure ChromeDriver is installed: `pip install webdriver-manager`")
         return []
 
 def create_pdf_report(results, query):
-    """Create PDF report"""
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
-    story = []
-    styles = getSampleStyleSheet()
+    try:
+        pdf_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
+        story = []
+        styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=24,
-        textColor=colors.HexColor('#1f77b4'),
-        spaceAfter=30,
-        alignment=1
-    )
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#1f77b4'),
+            spaceAfter=30,
+            alignment=1
+        )
 
-    story.append(Paragraph(f"📚 Google Scholar Research Report: {query}", title_style))
-    story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
-    story.append(Spacer(1, 0.3*inch))
-    story.append(Paragraph(f"<b>Total Papers Found:</b> {len(results)}", styles['Normal']))
-    story.append(Spacer(1, 0.2*inch))
+        story.append(Paragraph(f"📚 Google Scholar Research Report: {query}", title_style))
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+        story.append(Spacer(1, 0.3*inch))
+        story.append(Paragraph(f"<b>Total Papers Found:</b> {len(results)}", styles['Normal']))
+        story.append(Spacer(1, 0.2*inch))
 
-    for idx, paper in enumerate(results, 1):
-        story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", styles['Heading2']))
-        story.append(Paragraph(f"<b>Authors:</b> {paper['authors']}", styles['Normal']))
-        story.append(Paragraph(f"<b>Publication:</b> {paper['publication']}", styles['Normal']))
-        story.append(Paragraph(f"<b>Year:</b> {paper['year']}", styles['Normal']))
+        for idx, paper in enumerate(results, 1):
+            story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", styles['Heading2']))
+            story.append(Paragraph(f"<b>Authors:</b> {paper['authors']}", styles['Normal']))
+            story.append(Paragraph(f"<b>Publication:</b> {paper['publication']}", styles['Normal']))
+            story.append(Paragraph(f"<b>Year:</b> {paper['year']}", styles['Normal']))
 
-        if paper['link']:
-            story.append(Paragraph(f"<b>Link:</b> <a href='{paper['link']}'>View Paper</a>", styles['Normal']))
+            if paper['link']:
+                story.append(Paragraph(f"<b>Link:</b> <a href='{paper['link']}'>View Paper</a>", styles['Normal']))
 
-        abstract_text = paper['abstract'][:300] + "..." if len(paper['abstract']) > 300 else paper['abstract']
-        story.append(Paragraph(f"<b>Abstract:</b> {abstract_text}", styles['Normal']))
-        story.append(Spacer(1, 0.15*inch))
+            abstract_text = paper['abstract'][:300] + "..." if len(paper['abstract']) > 300 else paper['abstract']
+            story.append(Paragraph(f"<b>Abstract:</b> {abstract_text}", styles['Normal']))
+            story.append(Spacer(1, 0.15*inch))
 
-    doc.build(story)
-    pdf_buffer.seek(0)
-    return pdf_buffer
+        doc.build(story)
+        pdf_buffer.seek(0)
+        return pdf_buffer.getvalue()
+    except Exception as e:
+        st.error(f"PDF Error: {str(e)}")
+        return None
 
 # Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     num_results = st.slider("Number of results", 5, 20, 10, help="How many papers to retrieve")
-
     st.divider()
-
     st.markdown("### 📚 How It Works")
-    st.info("""
-    1. **Search** - Enter a research topic
-    2. **Collect** - Browser searches Google Scholar
-    3. **Extract** - Papers are extracted automatically
-    4. **Export** - Download as PDF, JSON, or CSV
-    """)
-
+    st.info("1. Enter a research topic\n2. Browser searches Google Scholar\n3. Extract papers automatically\n4. Download as PDF, JSON, or CSV")
     st.divider()
-
     st.markdown("### 💡 Tips")
-    st.caption("""
-    • Use specific keywords for better results
-    • Try searching for recent topics
-    • Results include title, authors, year & abstract
-    """)
+    st.caption("• Use specific keywords\n• Try recent topics\n• See your history below")
 
-# Main search interface
+# Main interface
 st.markdown("---")
 st.subheader("🔎 Search Research Papers")
 
 col1, col2 = st.columns([4, 1])
 
 with col1:
-    query = st.text_input(
-        "What would you like to research?",
-        placeholder="e.g., machine learning, quantum computing, climate change...",
-        label_visibility="collapsed"
-    )
+    query = st.text_input("What would you like to research?", placeholder="e.g., machine learning, quantum computing...", label_visibility="collapsed")
 
 with col2:
     search_button = st.button("🔍 Search", use_container_width=True, type="primary")
 
-# Search and results
+# Search
 if search_button and query:
-    with st.spinner(f"🔍 Searching Google Scholar for '{query}'..."):
+    with st.spinner(f"🔍 Searching for '{query}'..."):
         results = search_google_scholar_selenium(query, num_results)
 
     if results:
-        st.success(f"✅ Successfully found **{len(results)} papers!**", icon="✅")
+        st.success(f"✅ Found **{len(results)} papers!**")
 
-        # Display in tabs
-        tab1, tab2, tab3 = st.tabs(["📖 Papers", "📊 Analytics", "⬇️ Downloads"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📖 Papers", "📊 Analytics", "⬇️ Downloads", "📜 History"])
 
         with tab1:
             st.markdown("### Search Results")
             for idx, paper in enumerate(results, 1):
                 with st.expander(f"**{idx}. {paper['title'][:80]}...**", expanded=(idx==1)):
-                    st.markdown(f"**Authors:** {paper['authors']}")
-                    st.markdown(f"**Publication:** {paper['publication']}")
-                    st.markdown(f"**Year:** {paper['year']}")
-
+                    st.markdown(f"**Authors:** {paper['authors']}\n**Publication:** {paper['publication']}\n**Year:** {paper['year']}")
                     if paper['link']:
                         st.markdown(f"[🔗 View Paper]({paper['link']})")
-
                     st.markdown(f"**Abstract:** {paper['abstract']}")
 
         with tab2:
             st.markdown("### Summary Statistics")
-
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Papers", len(results))
@@ -275,8 +287,7 @@ if search_button and query:
             with col3:
                 st.metric("With Abstract", sum(1 for p in results if 'No abstract' not in p['abstract']))
 
-            # Results table
-            st.markdown("### All Results Table")
+            st.markdown("### All Results")
             df = pd.DataFrame([
                 {
                     'Title': p['title'][:50] + '...' if len(p['title']) > 50 else p['title'],
@@ -291,18 +302,30 @@ if search_button and query:
         with tab3:
             st.markdown("### Export Options")
 
-            # PDF Export
+            # PDF Section
             st.subheader("📑 PDF Report")
-            if st.button("Generate PDF Report", use_container_width=True):
-                with st.spinner("Generating PDF..."):
-                    pdf_buffer = create_pdf_report(results, query)
-                    st.download_button(
-                        label="⬇️ Download PDF Report",
-                        data=pdf_buffer,
-                        file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+            if st.button("📥 Generate PDF", use_container_width=True, key="gen_pdf"):
+                pdf_data = create_pdf_report(results, query)
+                if pdf_data:
+                    st.session_state.pdf_buffer = pdf_data
+                    st.session_state.pdf_filename = f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    save_pdf_to_history(query, len(results), st.session_state.pdf_filename)
+                    st.success("✅ PDF ready to download!")
+                else:
+                    st.error("Failed to create PDF")
+
+            # Show download button if PDF is ready
+            if st.session_state.pdf_buffer:
+                st.download_button(
+                    label="⬇️ Download PDF",
+                    data=st.session_state.pdf_buffer,
+                    file_name=st.session_state.pdf_filename,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_pdf"
+                )
+
+            st.divider()
 
             # JSON Export
             st.subheader("📋 JSON Data")
@@ -310,10 +333,12 @@ if search_button and query:
             st.download_button(
                 label="⬇️ Download JSON",
                 data=json_data,
-                file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.json",
+                file_name=f"research_{query.replace(' ', '_')}.json",
                 mime="application/json",
                 use_container_width=True
             )
+
+            st.divider()
 
             # CSV Export
             st.subheader("📊 CSV Spreadsheet")
@@ -322,22 +347,35 @@ if search_button and query:
             st.download_button(
                 label="⬇️ Download CSV",
                 data=csv_data,
-                file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"research_{query.replace(' ', '_')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
 
+        with tab4:
+            st.markdown("### 📜 PDF History (Last 30 days)")
+            history = get_pdf_history()
+            if history:
+                for q, nr, created, fname in history:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**{q}** • {nr} papers")
+                        st.caption(f"📅 {created[:10]}")
+                    with col2:
+                        st.caption("✓ Saved")
+            else:
+                st.info("No PDFs yet. Generate one above!")
+
     else:
-        st.warning("❌ No results found. Check your query and try again.")
+        st.warning("❌ No results found.")
 
 else:
-    st.info("👉 Enter a search query and click 'Search' to begin!")
+    st.info("👉 Enter a query and click Search!")
 
-# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>
-    <p>Built with ❤️ using Streamlit + Selenium | Powered by Google Scholar</p>
-    <p><small>Runs locally on your computer - Google Scholar won't block it!</small></p>
+    <p>Built with ❤️ using Streamlit + Selenium</p>
+    <p><small>PDFs auto-delete after 30 days</small></p>
 </div>
 """, unsafe_allow_html=True)
