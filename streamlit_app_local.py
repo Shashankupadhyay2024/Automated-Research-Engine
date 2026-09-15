@@ -18,21 +18,79 @@ from urllib.parse import quote
 st.set_page_config(
     page_title="Atlas Research Engine",
     page_icon="🔍",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("🔍 Atlas Research Engine")
-st.markdown("Search Google Scholar and export peer-reviewed papers as PDF")
+# Custom CSS for better styling
+st.markdown("""
+    <style>
+    .main {
+        padding-top: 2rem;
+    }
+    .stTabs [data-baseweb="tab-list"] button {
+        font-size: 16px;
+        font-weight: 500;
+    }
+    .header-text {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+    }
+    .subtitle-text {
+        font-size: 1.2rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Header with gradient
+st.markdown('<div class="header-text">🔍 Atlas Research Engine</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle-text">Discover & Export Academic Research from Google Scholar</div>', unsafe_allow_html=True)
 
 def search_google_scholar_selenium(query, num_results=10):
     """Open browser, search Google Scholar, extract results"""
     results = []
 
     try:
-        # Create Chrome driver
+        # Create Chrome driver with proper container configuration
         options = webdriver.ChromeOptions()
+        
+        # Use Chromium from Playwright image
+        options.binary_location = "/usr/bin/chromium"
+
+        # Essential for containers
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-plugins")
+        options.add_argument("--disable-web-resources")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-breakpad")
+        options.add_argument("--disable-client-side-phishing-detection")
+        options.add_argument("--disable-component-extensions-with-background-pages")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-prompt-on-repost")
+        options.add_argument("--disable-sync")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--mute-audio")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--no-first-run")
+        options.add_argument("--start-maximized")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+        # Disable images/CSS to speed up
+        options.add_argument("--blink-settings=imagesEnabled=false")
 
         driver = webdriver.Chrome(options=options)
 
@@ -144,31 +202,43 @@ def create_pdf_report(results, query):
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Settings")
-    num_results = st.slider("Number of results", 5, 20, 10)
+    st.markdown("### ⚙️ Settings")
+    num_results = st.slider("Number of results", 5, 20, 10, help="How many papers to retrieve")
 
-    st.markdown("---")
-    st.markdown("### ✅ How it works:")
-    st.markdown("""
-    1. Enter your search query
-    2. Click Search
-    3. Browser opens Google Scholar
-    4. Results are extracted automatically
-    5. Download PDF/JSON/CSV
+    st.divider()
+
+    st.markdown("### 📚 How It Works")
+    st.info("""
+    1. **Search** - Enter a research topic
+    2. **Collect** - Browser searches Google Scholar
+    3. **Extract** - Papers are extracted automatically
+    4. **Export** - Download as PDF, JSON, or CSV
     """)
 
-# Main search
-col1, col2 = st.columns([3, 1])
+    st.divider()
+
+    st.markdown("### 💡 Tips")
+    st.caption("""
+    • Use specific keywords for better results
+    • Try searching for recent topics
+    • Results include title, authors, year & abstract
+    """)
+
+# Main search interface
+st.markdown("---")
+st.subheader("🔎 Search Research Papers")
+
+col1, col2 = st.columns([4, 1])
 
 with col1:
     query = st.text_input(
-        "🔍 What do you want to research?",
-        placeholder="e.g., machine learning, quantum computing...",
+        "What would you like to research?",
+        placeholder="e.g., machine learning, quantum computing, climate change...",
         label_visibility="collapsed"
     )
 
 with col2:
-    search_button = st.button("Search", use_container_width=True, type="primary")
+    search_button = st.button("🔍 Search", use_container_width=True, type="primary")
 
 # Search and results
 if search_button and query:
@@ -176,10 +246,10 @@ if search_button and query:
         results = search_google_scholar_selenium(query, num_results)
 
     if results:
-        st.success(f"✅ Found {len(results)} papers!")
+        st.success(f"✅ Successfully found **{len(results)} papers!**", icon="✅")
 
         # Display in tabs
-        tab1, tab2, tab3 = st.tabs(["📄 View Results", "📊 Summary", "⬇️ Export"])
+        tab1, tab2, tab3 = st.tabs(["📖 Papers", "📊 Analytics", "⬇️ Downloads"])
 
         with tab1:
             st.markdown("### Search Results")
