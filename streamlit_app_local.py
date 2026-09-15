@@ -269,7 +269,7 @@ if st.session_state.articles:
             <p><b>Abstract:</b> {article['abstract'][:300]}...</p>
             <p>
             🔗 <a href="{article['scholar_link']}" target="_blank">View on Google Scholar</a>
-            {f"  |  📄 <a href=\"{article['pdf_link']}\" target=\"_blank\">Download PDF</a>" if article['pdf_link'] else ""}
+            {f"  |  📄 <a href='{article['pdf_link']}' target='_blank'>Download PDF</a>" if article['pdf_link'] else ''}
             </p>
             </div>
             """, unsafe_allow_html=True)
