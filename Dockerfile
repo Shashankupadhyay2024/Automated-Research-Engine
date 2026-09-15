@@ -1,20 +1,4 @@
-FROM python:3.11-slim
-
-# Install Chromium and system dependencies for Selenium
-RUN apt-get update && apt-get install -y \
-    chromium-browser \
-    chromium-driver \
-    ca-certificates \
-    libx11-6 \
-    libxext6 \
-    libxrender1 \
-    libfontconfig1 \
-    libdbus-1-3 \
-    fonts-liberation \
-    libnss3 \
-    lsb-release \
-    xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 WORKDIR /app
 
