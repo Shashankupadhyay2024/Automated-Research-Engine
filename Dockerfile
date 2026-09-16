@@ -1,13 +1,12 @@
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+FROM python:3.10-slim
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY streamlit_app_local.py app.py
-COPY .streamlit/ .streamlit/
+COPY web.py .
 
-EXPOSE 8080
+EXPOSE 10000
 
-CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "web.py", "--server.port=10000", "--server.address=0.0.0.0"]
