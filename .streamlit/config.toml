@@ -1,0 +1,11 @@
+[client]
+showErrorDetails = true
+
+[server]
+headless = true
+enableXsrfProtection = true
+enableCORS = false
+maxUploadSize = 200
+
+[logger]
+level = "info"
