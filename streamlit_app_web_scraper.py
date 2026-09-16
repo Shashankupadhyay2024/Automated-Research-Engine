@@ -20,18 +20,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom styling
-st.markdown("""
-    <style>
-    .main {
-        max-width: 1200px;
-    }
-    .stTabs [data-baseweb="tab-list"] button {
-        font-size: 18px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
 st.title("🔍 Atlas Research Engine")
 st.markdown("Search Google Scholar and export your findings as PDF reports")
 
@@ -41,37 +29,24 @@ HEADERS = {
 }
 
 def search_google_scholar(query, num_results=10):
-    """
-    Search Google Scholar using web scraping (no Selenium needed)
-    """
+    """Search Google Scholar using web scraping (no Selenium needed)"""
     results = []
-
     try:
-        # Google Scholar URL
         url = f"https://scholar.google.com/scholar?q={quote(query)}&hl=en&num={num_results}"
-
-        # Make request
         response = requests.get(url, headers=HEADERS, timeout=10)
         response.raise_for_status()
-
-        # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Find all result divs
         result_divs = soup.find_all('div', class_='gs_ri')
 
         for result in result_divs[:num_results]:
             try:
-                # Extract title and link
                 title_elem = result.find('h3', class_='gs_ct')
                 if not title_elem:
                     continue
-
                 link_elem = title_elem.find('a')
                 title = link_elem.text if link_elem else "No title"
                 link = link_elem['href'] if link_elem else ""
 
-                # Extract authors, publication, year
                 info_elem = result.find('div', class_='gs_a')
                 if info_elem:
                     info_text = info_elem.text
@@ -84,7 +59,6 @@ def search_google_scholar(query, num_results=10):
                     publication = "Unknown"
                     year = "Unknown"
 
-                # Extract abstract/snippet
                 abstract_elem = result.find('div', class_='gs_rs')
                 abstract = abstract_elem.text if abstract_elem else "No abstract available"
 
@@ -96,38 +70,31 @@ def search_google_scholar(query, num_results=10):
                     'abstract': abstract,
                     'link': link
                 })
-
-                # Be respectful - small delay between requests
                 time.sleep(0.5)
-
             except Exception as e:
                 st.warning(f"Error parsing result: {str(e)}")
                 continue
 
         return results
-
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Search failed: {str(e)}")
         st.info("💡 Tip: Google Scholar might block automated requests. Try again in a moment or use a simpler query.")
         return []
 
 def create_pdf_report(results, query):
-    """
-    Create a PDF report from search results
-    """
+    """Create a PDF report from search results"""
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
     story = []
     styles = getSampleStyleSheet()
 
-    # Custom styles
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
         textColor=colors.HexColor('#1f77b4'),
         spaceAfter=30,
-        alignment=1  # Center
+        alignment=1
     )
 
     heading_style = ParagraphStyle(
@@ -139,16 +106,12 @@ def create_pdf_report(results, query):
         spaceBefore=12
     )
 
-    # Title
     story.append(Paragraph(f"📚 Research Report: {query}", title_style))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Spacer(1, 0.3*inch))
-
-    # Summary
     story.append(Paragraph(f"<b>Total Results Found:</b> {len(results)}", styles['Normal']))
     story.append(Spacer(1, 0.2*inch))
 
-    # Results
     for idx, paper in enumerate(results, 1):
         story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", heading_style))
         story.append(Paragraph(f"<b>Authors:</b> {paper['authors']}", styles['Normal']))
@@ -161,7 +124,6 @@ def create_pdf_report(results, query):
         story.append(Paragraph(f"<b>Abstract:</b> {paper['abstract'][:300]}...", styles['Normal']))
         story.append(Spacer(1, 0.15*inch))
 
-    # Build PDF
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer
@@ -176,10 +138,7 @@ with st.sidebar:
     st.markdown("""
     **Atlas Research Engine** searches Google Scholar and exports findings as PDF reports.
 
-    **Note:** Web scraping has limitations. If searches fail, try:
-    - Simpler queries
-    - Waiting a few minutes
-    - Checking your internet connection
+    **Note:** Web scraping has limitations. If searches fail, try simpler queries.
     """)
 
 # Main search interface
@@ -203,7 +162,6 @@ if search_button and query:
     if results:
         st.success(f"✅ Found {len(results)} results!")
 
-        # Display results in tabs
         tab1, tab2, tab3 = st.tabs(["📄 View Results", "📊 Summary", "⬇️ Export"])
 
         with tab1:
@@ -222,7 +180,6 @@ if search_button and query:
         with tab2:
             st.markdown("### Summary Statistics")
 
-            # Extract years and count
             years = [p['year'] for p in results if p['year'] != 'Unknown']
 
             col1, col2, col3 = st.columns(3)
@@ -234,7 +191,6 @@ if search_button and query:
                 if years:
                     st.metric("Avg Year", f"{sum(int(y) for y in years if y.isdigit()) / len([y for y in years if y.isdigit()]):.0f}")
 
-            # Results table
             st.markdown("### All Results Table")
             df = pd.DataFrame([
                 {
@@ -250,7 +206,6 @@ if search_button and query:
         with tab3:
             st.markdown("### Export Options")
 
-            # PDF Export
             st.subheader("📑 PDF Report")
             if st.button("Generate PDF Report", use_container_width=True):
                 with st.spinner("Generating PDF..."):
@@ -263,7 +218,6 @@ if search_button and query:
                         use_container_width=True
                     )
 
-            # JSON Export
             st.subheader("📋 JSON Data")
             json_data = json.dumps(results, indent=2)
             st.download_button(
@@ -274,7 +228,6 @@ if search_button and query:
                 use_container_width=True
             )
 
-            # CSV Export
             st.subheader("📊 CSV Spreadsheet")
             df_export = pd.DataFrame(results)
             csv_data = df_export.to_csv(index=False)
@@ -292,7 +245,6 @@ if search_button and query:
 else:
     st.info("👉 Enter a search query and click 'Search' to begin!")
 
-# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>

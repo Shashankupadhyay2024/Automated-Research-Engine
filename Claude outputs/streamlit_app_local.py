@@ -1,156 +1,173 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
-from datetime import datetime
 import json
-from urllib.parse import quote
 import pandas as pd
-from reportlab.lib.pagesizes import letter, A4
+from datetime import datetime
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib import colors
 import io
+from urllib.parse import quote
 
-# Page config
 st.set_page_config(
     page_title="Atlas Research Engine",
     page_icon="🔍",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Custom styling
+# Custom CSS for better styling
 st.markdown("""
     <style>
     .main {
-        max-width: 1200px;
+        padding-top: 2rem;
     }
     .stTabs [data-baseweb="tab-list"] button {
-        font-size: 18px;
+        font-size: 16px;
+        font-weight: 500;
+    }
+    .header-text {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+    }
+    .subtitle-text {
+        font-size: 1.2rem;
+        color: #666;
+        margin-bottom: 2rem;
     }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-st.title("🔍 Atlas Research Engine")
-st.markdown("Search Google Scholar and export your findings as PDF reports")
+# Header with gradient
+st.markdown('<div class="header-text">🔍 Atlas Research Engine</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle-text">Discover & Export Academic Research from Google Scholar</div>', unsafe_allow_html=True)
 
-# Headers for requests (to mimic browser)
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-}
-
-def search_google_scholar(query, num_results=10):
-    """
-    Search Google Scholar using web scraping (no Selenium needed)
-    """
+def search_google_scholar_selenium(query, num_results=10):
+    """Open browser, search Google Scholar, extract results"""
     results = []
 
     try:
-        # Google Scholar URL
-        url = f"https://scholar.google.com/scholar?q={quote(query)}&hl=en&num={num_results}"
+        # Create Chrome driver with proper container configuration
+        options = webdriver.ChromeOptions()
 
-        # Make request
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
+        # Essential for containers
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-plugins")
+        options.add_argument("--start-maximized")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-        # Parse HTML
-        soup = BeautifulSoup(response.content, 'html.parser')
+        # Disable images/CSS to speed up
+        options.add_argument("--blink-settings=imagesEnabled=false")
 
-        # Find all result divs
-        result_divs = soup.find_all('div', class_='gs_ri')
+        driver = webdriver.Chrome(options=options)
 
-        for result in result_divs[:num_results]:
-            try:
-                # Extract title and link
-                title_elem = result.find('h3', class_='gs_ct')
-                if not title_elem:
-                    continue
+        try:
+            st.info(f"🔍 Opening Google Scholar and searching for '{query}'...")
 
-                link_elem = title_elem.find('a')
-                title = link_elem.text if link_elem else "No title"
-                link = link_elem['href'] if link_elem else ""
+            # Navigate to Google Scholar
+            scholar_url = f"https://scholar.google.com/scholar?q={quote(query)}&num={num_results}"
+            driver.get(scholar_url)
 
-                # Extract authors, publication, year
-                info_elem = result.find('div', class_='gs_a')
-                if info_elem:
+            # Wait for results to load
+            time.sleep(3)
+
+            st.info("📄 Extracting paper information...")
+
+            # Get all result containers
+            result_containers = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
+
+            if not result_containers:
+                st.warning("No results found on Google Scholar")
+                return []
+
+            for result in result_containers[:num_results]:
+                try:
+                    # Title and link
+                    title_elem = result.find_element(By.CSS_SELECTOR, "h3 a")
+                    title = title_elem.text
+                    link = title_elem.get_attribute("href")
+
+                    # Authors, publication, year
+                    info_elem = result.find_element(By.CSS_SELECTOR, "div.gs_a")
                     info_text = info_elem.text
-                    parts = info_text.split(' - ')
+                    parts = [p.strip() for p in info_text.split(' - ')]
+
                     authors = parts[0] if len(parts) > 0 else "Unknown"
                     publication = parts[1] if len(parts) > 1 else "Unknown"
                     year = parts[2] if len(parts) > 2 else "Unknown"
-                else:
-                    authors = "Unknown"
-                    publication = "Unknown"
-                    year = "Unknown"
 
-                # Extract abstract/snippet
-                abstract_elem = result.find('div', class_='gs_rs')
-                abstract = abstract_elem.text if abstract_elem else "No abstract available"
+                    # Abstract
+                    try:
+                        abstract_elem = result.find_element(By.CSS_SELECTOR, "div.gs_rs")
+                        abstract = abstract_elem.text
+                    except:
+                        abstract = "No abstract available"
 
-                results.append({
-                    'title': title,
-                    'authors': authors,
-                    'publication': publication,
-                    'year': year,
-                    'abstract': abstract,
-                    'link': link
-                })
+                    results.append({
+                        'title': title,
+                        'authors': authors,
+                        'publication': publication,
+                        'year': year,
+                        'abstract': abstract,
+                        'link': link
+                    })
 
-                # Be respectful - small delay between requests
-                time.sleep(0.5)
+                    time.sleep(0.5)
 
-            except Exception as e:
-                st.warning(f"Error parsing result: {str(e)}")
-                continue
+                except Exception as e:
+                    st.warning(f"Error extracting paper: {str(e)[:50]}")
+                    continue
+
+        finally:
+            driver.quit()
 
         return results
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Search failed: {str(e)}")
-        st.info("💡 Tip: Google Scholar might block automated requests. Try again in a moment or use a simpler query.")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+        st.info("Make sure ChromeDriver is installed: `pip install webdriver-manager`")
         return []
 
 def create_pdf_report(results, query):
-    """
-    Create a PDF report from search results
-    """
+    """Create PDF report"""
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
     story = []
     styles = getSampleStyleSheet()
 
-    # Custom styles
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
         textColor=colors.HexColor('#1f77b4'),
         spaceAfter=30,
-        alignment=1  # Center
+        alignment=1
     )
 
-    heading_style = ParagraphStyle(
-        'CustomHeading',
-        parent=styles['Heading2'],
-        fontSize=14,
-        textColor=colors.HexColor('#1f77b4'),
-        spaceAfter=12,
-        spaceBefore=12
-    )
-
-    # Title
-    story.append(Paragraph(f"📚 Research Report: {query}", title_style))
+    story.append(Paragraph(f"📚 Google Scholar Research Report: {query}", title_style))
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
     story.append(Spacer(1, 0.3*inch))
-
-    # Summary
-    story.append(Paragraph(f"<b>Total Results Found:</b> {len(results)}", styles['Normal']))
+    story.append(Paragraph(f"<b>Total Papers Found:</b> {len(results)}", styles['Normal']))
     story.append(Spacer(1, 0.2*inch))
 
-    # Results
     for idx, paper in enumerate(results, 1):
-        story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", heading_style))
+        story.append(Paragraph(f"<b>{idx}. {paper['title']}</b>", styles['Heading2']))
         story.append(Paragraph(f"<b>Authors:</b> {paper['authors']}", styles['Normal']))
         story.append(Paragraph(f"<b>Publication:</b> {paper['publication']}", styles['Normal']))
         story.append(Paragraph(f"<b>Year:</b> {paper['year']}", styles['Normal']))
@@ -158,10 +175,10 @@ def create_pdf_report(results, query):
         if paper['link']:
             story.append(Paragraph(f"<b>Link:</b> <a href='{paper['link']}'>View Paper</a>", styles['Normal']))
 
-        story.append(Paragraph(f"<b>Abstract:</b> {paper['abstract'][:300]}...", styles['Normal']))
+        abstract_text = paper['abstract'][:300] + "..." if len(paper['abstract']) > 300 else paper['abstract']
+        story.append(Paragraph(f"<b>Abstract:</b> {abstract_text}", styles['Normal']))
         story.append(Spacer(1, 0.15*inch))
 
-    # Build PDF
     doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer
@@ -172,38 +189,37 @@ with st.sidebar:
     num_results = st.slider("Number of results", 5, 20, 10)
 
     st.markdown("---")
-    st.markdown("### About")
+    st.markdown("### ✅ How it works:")
     st.markdown("""
-    **Atlas Research Engine** searches Google Scholar and exports findings as PDF reports.
-
-    **Note:** Web scraping has limitations. If searches fail, try:
-    - Simpler queries
-    - Waiting a few minutes
-    - Checking your internet connection
+    1. Enter your search query
+    2. Click Search
+    3. Browser opens Google Scholar
+    4. Results are extracted automatically
+    5. Download PDF/JSON/CSV
     """)
 
-# Main search interface
+# Main search
 col1, col2 = st.columns([3, 1])
 
 with col1:
     query = st.text_input(
-        "🔍 What would you like to research?",
-        placeholder="e.g., machine learning, climate change, quantum computing...",
+        "🔍 What do you want to research?",
+        placeholder="e.g., machine learning, quantum computing...",
         label_visibility="collapsed"
     )
 
 with col2:
     search_button = st.button("Search", use_container_width=True, type="primary")
 
-# Search and display results
+# Search and results
 if search_button and query:
     with st.spinner(f"🔍 Searching Google Scholar for '{query}'..."):
-        results = search_google_scholar(query, num_results)
+        results = search_google_scholar_selenium(query, num_results)
 
     if results:
-        st.success(f"✅ Found {len(results)} results!")
+        st.success(f"✅ Found {len(results)} papers!")
 
-        # Display results in tabs
+        # Display in tabs
         tab1, tab2, tab3 = st.tabs(["📄 View Results", "📊 Summary", "⬇️ Export"])
 
         with tab1:
@@ -222,17 +238,13 @@ if search_button and query:
         with tab2:
             st.markdown("### Summary Statistics")
 
-            # Extract years and count
-            years = [p['year'] for p in results if p['year'] != 'Unknown']
-
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Papers", len(results))
             with col2:
                 st.metric("With Links", sum(1 for p in results if p['link']))
             with col3:
-                if years:
-                    st.metric("Avg Year", f"{sum(int(y) for y in years if y.isdigit()) / len([y for y in years if y.isdigit()]):.0f}")
+                st.metric("With Abstract", sum(1 for p in results if 'No abstract' not in p['abstract']))
 
             # Results table
             st.markdown("### All Results Table")
@@ -287,7 +299,7 @@ if search_button and query:
             )
 
     else:
-        st.warning("❌ No results found. Try a different search term.")
+        st.warning("❌ No results found. Check your query and try again.")
 
 else:
     st.info("👉 Enter a search query and click 'Search' to begin!")
@@ -296,6 +308,7 @@ else:
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>
-    <p>Built with ❤️ using Streamlit | Powered by Google Scholar</p>
+    <p>Built with ❤️ using Streamlit + Selenium | Powered by Google Scholar</p>
+    <p><small>Runs locally on your computer - Google Scholar won't block it!</small></p>
 </div>
 """, unsafe_allow_html=True)
