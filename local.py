@@ -1,298 +1,457 @@
 import streamlit as st
-import undetected_chromedriver as uc
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 import time
 import json
 import pandas as pd
-import io
+from datetime import datetime
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib import colors
+import io
 from urllib.parse import quote
+import re
 
-st.set_page_config(page_title="Atlas - Local", layout="wide", initial_sidebar_state="expanded")
+# Page config
+st.set_page_config(
+    page_title="Atlas Research Engine",
+    page_icon="🔍",
+    layout="wide"
+)
 
-if 'results' not in st.session_state:
-    st.session_state.results = None
-if 'search_history' not in st.session_state:
-    st.session_state.search_history = []
-if 'last_query' not in st.session_state:
-    st.session_state.last_query = ""
+# Custom styling
+st.markdown("""
+    <style>
+    .main {
+        max-width: 1200px;
+    }
+    .stTabs [data-baseweb="tab-list"] button {
+        font-size: 18px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-dark_css = """<style>
-body { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #e2e8f0; }
-[data-testid="stAppViewContainer"] { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
-[data-testid="stMainBlockContainer"] { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
-[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); }
-h1 { background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; font-size: 3rem !important; font-weight: 800 !important; }
-h2, h3 { color: #e2e8f0 !important; }
-input[type="text"], input[type="number"] { background: rgba(15, 23, 42, 0.8) !important; border: 2px solid rgba(148, 163, 184, 0.3) !important; color: #ffffff !important; padding: 12px 16px !important; border-radius: 8px !important; }
-button { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important; color: white !important; border: none !important; padding: 12px 24px !important; border-radius: 8px !important; font-weight: 600 !important; }
-button:hover { transform: translateY(-2px) !important; box-shadow: 0 8px 16px rgba(59, 130, 246, 0.3) !important; }
-p, span, label { color: #cbd5e1 !important; }
-a { color: #60a5fa !important; }
-.score-badge { display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; margin-right: 8px; }
-</style>"""
+st.title("🔍 Atlas Research Engine")
+st.markdown("Search Google Scholar and export your findings as PDF reports")
 
-st.markdown(dark_css, unsafe_allow_html=True)
+# Initialize session state
+if 'articles' not in st.session_state:
+    st.session_state.articles = []
+if 'captcha_waiting' not in st.session_state:
+    st.session_state.captcha_waiting = False
+if 'captcha_done' not in st.session_state:
+    st.session_state.captcha_done = False
 
-with st.sidebar:
-    st.markdown("## 🔍 Atlas Research")
-    st.markdown("### LOCAL VERSION")
-    st.markdown("---")
-    st.markdown("✅ Google Scholar\n✅ PDF exports\n✅ CSV & JSON")
-    if st.session_state.search_history:
-        st.markdown("### 📜 Recent Searches")
-        for i, h in enumerate(st.session_state.search_history[:5], 1):
-            if st.button(f"{i}. {h['query']}", key=f"hist_{i}", use_container_width=True):
-                st.session_state.last_query = h['query']
-                st.session_state.results = h.get('results', None)
+def format_citation(article, style='APA'):
+    """Format citation in different styles"""
+    title = article.get('title', 'Untitled')
+    authors = article.get('authors', 'Unknown')
+    year = article.get('year', 'n.d.')
+    publication = article.get('publication', 'Unknown')
+    link = article.get('scholar_link', '')
 
-st.markdown("# 🔍 Atlas Research")
-col1, col2, col3 = st.columns([3, 1, 1])
-with col1:
-    query = st.text_input("Search:", label_visibility="collapsed", placeholder="e.g., machine learning, quantum computing")
-with col2:
-    num_papers = st.slider("Results", 5, 100, 20, 5, label_visibility="collapsed")
-with col3:
-    search_btn = st.button("🔍 Search", use_container_width=True)
+    if style == 'APA':
+        return f"{authors} ({year}). {title}. {publication}. Retrieved from {link}"
+    elif style == 'MLA':
+        return f"{authors}. \"{title}.\" {publication}, {year}. Web. {link}"
+    elif style == 'Chicago':
+        return f"{authors}. \"{title}.\" {publication} ({year}). Accessed from {link}"
+    elif style == 'BibTeX':
+        key = title[:20].replace(' ', '').lower()
+        return f"@article{{{key},\n  title={{{title}}},\n  author={{{authors}}},\n  journal={{{publication}}},\n  year={{{year}}},\n  url={{{link}}}\n}}"
+    return authors
 
-def calculate_credibility(item):
+def calculate_credibility(article):
+    """Calculate credibility score 0-100"""
     score = 50
-    reasons = []
-    
-    citation_text = item.get('citations', '')
-    try:
-        if 'Cited by' in citation_text:
-            citations = int(citation_text.split('Cited by')[1].strip().split()[0])
-            bonus = min(30, citations // 5)
-            score += bonus
-            reasons.append(f"Citations ({citations}): +{bonus}")
-    except:
-        pass
-    
-    year_text = item.get('year', '')
+    if len(article.get('abstract', '')) > 200:
+        score += 15
+    publication = (article.get('publication', '') or '').lower()
+    quality_sources = ['nature', 'science', 'ieee', 'acm', 'proceedings', 'journal', 'conference']
+    if any(s in publication for s in quality_sources):
+        score += 15
+    year_text = article.get('year', '')
     try:
         year = int(year_text)
         years_old = 2025 - year
         if years_old <= 3:
-            bonus = 15
-            score += bonus
-            reasons.append(f"Recent paper ({years_old}y old): +{bonus}")
+            score += 15
         elif years_old <= 7:
-            bonus = 10
-            score += bonus
-            reasons.append(f"Recent paper ({years_old}y old): +{bonus}")
+            score += 10
         elif years_old <= 15:
-            bonus = 5
-            score += bonus
-            reasons.append(f"Established paper ({years_old}y old): +{bonus}")
+            score += 5
     except:
         pass
-    
-    if item.get('abstract') and len(item.get('abstract', '')) > 100:
-        score += 10
-        reasons.append("Quality abstract: +10")
-    
-    publication = (item.get('publication', '') or '').lower()
-    quality_sources = ['nature', 'science', 'ieee', 'acm', 'proceedings', 'journal', 'conference']
-    if any(s in publication for s in quality_sources):
-        score += 10
-        reasons.append("Quality venue: +10")
-    
-    item['credibility_reasons'] = reasons
     return min(100, score)
 
-def format_citation(item, style='APA'):
-    authors = item.get('authors', 'Unknown')
-    title = item.get('title', 'Unknown Title')
-    year = item.get('year', 'n.d.')
-    publication = item.get('publication', 'Unknown Venue')
-    if style == 'APA':
-        return f"{authors} ({year}). {title}. {publication}."
-    elif style == 'MLA':
-        return f"{authors}. \"{title}.\" {publication}, {year}."
-    elif style == 'Chicago':
-        return f"{authors}. \"{title}.\" {publication} ({year})."
-    elif style == 'BibTeX':
-        return f'@article{{scholar_{hash(title) % 10000},\n  title={{{title}}},\n  author={{{authors}}},\n  year={{{year}}},\n  journal={{{publication}}}\n}}'
-    return authors
+def scrape_google_scholar(query, num_results=10):
+    """Scrape Google Scholar using Selenium"""
+    articles = []
+    page = 0
 
-def scrape_google_scholar(query, num_papers):
-    results = []
-    driver = None
     try:
-        st.info(f"📍 Searching Google Scholar for: {query}")
-        driver = uc.Chrome(version_main=None)
-        url = f"https://scholar.google.com/scholar?q={quote(query)}&num={num_papers}"
-        driver.get(url)
-        time.sleep(5)
-        
-        items = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
-        st.success(f"✅ Found {len(items)} results on page")
+        options = webdriver.ChromeOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
 
-        for item in items[:num_papers]:
-            try:
-                title_el = item.find_element(By.CSS_SELECTOR, "h3 a")
-                title = title_el.text
-                link = title_el.get_attribute("href")
-                info_el = item.find_element(By.CSS_SELECTOR, "div.gs_a")
-                info_parts = info_el.text.split(' - ')
-                authors = info_parts[0] if len(info_parts) > 0 else "Unknown"
-                publication = info_parts[1] if len(info_parts) > 1 else "Unknown"
-                year = info_parts[2] if len(info_parts) > 2 else "Unknown"
-                abstract = "No abstract"
-                try:
-                    abstract_el = item.find_element(By.CSS_SELECTOR, "div.gs_rs")
-                    abstract = abstract_el.text
-                except:
-                    pass
-                citations = ""
-                try:
-                    citations_el = item.find_element(By.CSS_SELECTOR, "div.gs_fl")
-                    citations = citations_el.text
-                except:
-                    pass
-                paper_data = {
-                    'title': title,
-                    'authors': authors,
-                    'publication': publication,
-                    'year': year,
-                    'abstract': abstract,
-                    'link': link,
-                    'citations': citations
-                }
-                paper_data['credibility'] = calculate_credibility(paper_data)
-                results.append(paper_data)
-            except:
-                continue
+        driver = webdriver.Chrome(options=options)
+        status_placeholder = st.empty()
 
-        driver.quit()
-        results = sorted(results, key=lambda x: x['credibility'], reverse=True)
-        return results
+        try:
+            while len(articles) < num_results:
+                start = page * 10
+                driver.get(f"https://scholar.google.com/scholar?q={quote(query)}&start={start}")
+
+                # Check if CAPTCHA appears
+                st.session_state.captcha_done = False
+                captcha_detected = False
+                start_time = time.time()
+                max_wait = 10  # Wait 10 seconds to see if CAPTCHA appears
+
+                while (time.time() - start_time) < max_wait and not st.session_state.captcha_done:
+                    try:
+                        results = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
+                        if len(results) > 0:
+                            break  # Results loaded, no CAPTCHA
+                    except:
+                        pass
+                    time.sleep(1)
+
+                # If CAPTCHA detected (no results after wait), show button and wait for user
+                try:
+                    results = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
+                    if len(results) == 0:
+                        captcha_detected = True
+                except:
+                    captcha_detected = True
+
+                if captcha_detected:
+                    st.session_state.captcha_waiting = True
+                    with status_placeholder.container():
+                        st.warning("⚠️ Complete the CAPTCHA in the Chrome window, then click below")
+                        if st.button("✅ CAPTCHA Done - Continue", key=f"captcha_btn_{page}_{int(time.time())}"):
+                            st.session_state.captcha_done = True
+                            time.sleep(2)
+                            st.rerun()
+                    return None  # Wait for next rerun
+
+                # Extract results
+                time.sleep(1)
+                results = driver.find_elements(By.CSS_SELECTOR, "div.gs_ri")
+
+                if not results:
+                    status_placeholder.empty()
+                    break
+
+                for result in results:
+                    if len(articles) >= num_results:
+                        break
+
+                    try:
+                        title_elem = result.find_element(By.CSS_SELECTOR, "h3 a")
+                        title = title_elem.text
+                        scholar_link = title_elem.get_attribute("href")
+
+                        pdf_link = None
+                        try:
+                            pdf_elem = result.find_element(By.CSS_SELECTOR, "a[href*='.pdf']")
+                            pdf_link = pdf_elem.get_attribute("href")
+                        except:
+                            pass
+
+                        try:
+                            info_elem = result.find_element(By.CSS_SELECTOR, "div.gs_a")
+                            info_text = info_elem.text
+                            parts = [p.strip() for p in info_text.split(' - ')]
+                            authors = parts[0] if len(parts) > 0 else "Unknown"
+                            publication = parts[1] if len(parts) > 1 else "Unknown"
+                            year = parts[2] if len(parts) > 2 else "Unknown"
+                        except:
+                            authors = "Unknown"
+                            publication = "Unknown"
+                            year = "Unknown"
+
+                        try:
+                            abstract_elem = result.find_element(By.CSS_SELECTOR, "div.gs_rs")
+                            abstract = abstract_elem.text
+                        except:
+                            abstract = "No abstract available"
+
+                        articles.append({
+                            'title': title,
+                            'authors': authors,
+                            'publication': publication,
+                            'year': year,
+                            'abstract': abstract,
+                            'scholar_link': scholar_link,
+                            'pdf_link': pdf_link
+                        })
+
+                        time.sleep(0.3)
+
+                    except Exception as e:
+                        continue
+
+                page += 1
+                if page > 5:
+                    break
+
+        finally:
+            driver.quit()
+
+        status_placeholder.empty()
+        st.session_state.captcha_waiting = False
+        return articles[:num_results]
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-        if driver:
-            driver.quit()
         return []
 
-if search_btn and query:
-    st.session_state.last_query = query
-    if query not in [h['query'] for h in st.session_state.search_history]:
-        st.session_state.search_history.insert(0, {'query': query, 'results': None})
+def create_pdf_report(articles, query, citation_format='APA'):
+    """Create PDF report"""
+    try:
+        pdf_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        story = []
+        styles = getSampleStyleSheet()
 
-    with st.spinner("Searching Google Scholar..."):
-        results = scrape_google_scholar(query, num_papers)
-        if results:
-            st.session_state.results = results
-            for h in st.session_state.search_history:
-                if h['query'] == query:
-                    h['results'] = results
-                    break
-        else:
-            st.warning("⚠️ No papers found or search failed.")
-            st.session_state.results = None
+        title_style = ParagraphStyle(
+            'Title',
+            parent=styles['Heading1'],
+            fontSize=22,
+            textColor=colors.HexColor('#1f77b4'),
+            spaceAfter=15,
+            alignment=1
+        )
 
-if st.session_state.results:
+        heading_style = ParagraphStyle(
+            'ArticleTitle',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor=colors.HexColor('#1f77b4'),
+            spaceAfter=10
+        )
+
+        credibility_style = ParagraphStyle(
+            'Credibility',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor=colors.HexColor('#059669'),
+            spaceAfter=8,
+            fontName='Helvetica-Bold'
+        )
+
+        story.append(Paragraph(f"📚 Research Report: {query}", title_style))
+        story.append(Paragraph(f"Citation Format: {citation_format}", styles['Normal']))
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+        story.append(Spacer(1, 0.3*inch))
+        story.append(Paragraph(f"<b>Total Papers Found:</b> {len(articles)}", styles['Normal']))
+        story.append(Spacer(1, 0.3*inch))
+
+        for idx, article in enumerate(articles, 1):
+            credibility = calculate_credibility(article)
+
+            story.append(Paragraph(f"<b>{idx}. {article['title']}</b>", heading_style))
+            story.append(Paragraph(f"Credibility Score: {credibility}/100", credibility_style))
+            story.append(Paragraph(f"<b>Authors:</b> {article['authors']}", styles['Normal']))
+            story.append(Paragraph(f"<b>Publication:</b> {article['publication']}", styles['Normal']))
+            story.append(Paragraph(f"<b>Year:</b> {article['year']}", styles['Normal']))
+
+            if article['scholar_link']:
+                story.append(Paragraph(f"<b>🔗 Link:</b> <a href='{article['scholar_link']}'>View Paper</a>", styles['Normal']))
+
+            if article['pdf_link']:
+                story.append(Paragraph(f"<b>📄 PDF:</b> <a href='{article['pdf_link']}'>Download PDF</a>", styles['Normal']))
+
+            story.append(Spacer(1, 0.1*inch))
+            story.append(Paragraph(f"<b>Citation ({citation_format}):</b>", styles['Normal']))
+            citation_text = format_citation(article, citation_format)
+            story.append(Paragraph(citation_text, styles['Normal']))
+
+            story.append(Paragraph(f"<b>Abstract:</b> {article['abstract'][:300]}...", styles['Normal']))
+            story.append(Spacer(1, 0.15*inch))
+
+        story.append(Spacer(1, 0.3*inch))
+        story.append(Paragraph("_" * 80, styles['Normal']))
+        story.append(Spacer(1, 0.1*inch))
+        copyright_style = ParagraphStyle(
+            'Copyright',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=colors.HexColor('#666666'),
+            alignment=1
+        )
+        story.append(Paragraph(f"© {datetime.now().year} Shashank Upadhyay. All rights reserved.", copyright_style))
+
+        doc.build(story)
+        pdf_buffer.seek(0)
+        return pdf_buffer.getvalue()
+
+    except Exception as e:
+        st.error(f"PDF Error: {str(e)}")
+        return None
+
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Settings")
+    num_results = st.slider("Number of results", 5, 20, 10)
+
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📄 Papers", "📊 Summary", "⬇️ Export"])
+    st.markdown("### About")
+    st.markdown("""
+    **Atlas Research Engine** searches Google Scholar with Selenium and exports findings as PDF reports.
+
+    **How it works:**
+    - Enter a search query
+    - If CAPTCHA appears, complete it and click the button
+    - View results in tabs
+    - Export as PDF, JSON, or CSV
+    """)
+
+# Main search interface
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    query = st.text_input(
+        "🔍 What would you like to research?",
+        placeholder="e.g., machine learning, climate change, quantum computing...",
+        label_visibility="collapsed"
+    )
+
+with col2:
+    search_button = st.button("Search", use_container_width=True, type="primary")
+
+# Search and display results
+if search_button and query:
+    with st.spinner(f"🔍 Searching Google Scholar for '{query}'..."):
+        results = scrape_google_scholar(query, num_results)
+
+    if results:
+        st.session_state.articles = results
+        st.success(f"✅ Found {len(results)} papers!")
+
+if st.session_state.articles:
+    results = st.session_state.articles
+
+    # Display results in tabs
+    tab1, tab2, tab3 = st.tabs(["📄 View Results", "📊 Summary", "⬇️ Export"])
 
     with tab1:
-        for i, paper in enumerate(st.session_state.results, 1):
-            abstract = paper.get('abstract', 'No abstract available')
-            if abstract and len(abstract) > 300:
-                abstract = abstract[:300] + "..."
-
-            credibility = paper.get('credibility', 0)
-            link = paper.get('link', '')
-
-            st.markdown("---")
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                st.markdown(f"**{i}. {paper['title']}**")
+        st.markdown("### Search Results")
+        for idx, paper in enumerate(results, 1):
+            with st.expander(f"**{idx}. {paper['title'][:80]}...**", expanded=(idx==1)):
                 st.markdown(f"**Authors:** {paper['authors']}")
-                st.markdown(f"**Year:** {paper['year']} | **Pub:** {paper['publication']}")
-                st.markdown(f"**Abstract:** {abstract}")
-                if link:
-                    st.markdown(f"[🔗 View on Scholar]({link})")
-            
-            with col2:
-                st.markdown(f"<div class='score-badge' style='text-align: center; padding: 10px;'>{credibility}/100</div>", unsafe_allow_html=True)
-            
-            with st.expander("📊 Score Breakdown"):
-                st.markdown("**Base Score:** 50")
-                for reason in paper.get('credibility_reasons', []):
-                    st.markdown(f"• {reason}")
-                st.markdown(f"**Total:** {credibility}/100")
+                st.markdown(f"**Publication:** {paper['publication']}")
+                st.markdown(f"**Year:** {paper['year']}")
+
+                if paper['scholar_link']:
+                    st.markdown(f"[🔗 View Paper]({paper['scholar_link']})")
+
+                if paper['pdf_link']:
+                    st.markdown(f"[📄 Download PDF]({paper['pdf_link']})")
+
+                st.markdown(f"**Abstract:** {paper['abstract']}")
 
     with tab2:
+        st.markdown("### Summary Statistics")
+
+        years = [p['year'] for p in results if p['year'] != 'Unknown']
+
         col1, col2, col3 = st.columns(3)
-        col1.metric("Papers Found", len(st.session_state.results))
-        col2.metric("Avg Credibility", f"{sum(p.get('credibility', 0) for p in st.session_state.results) / len(st.session_state.results):.0f}/100")
-        citations_count = sum(1 for p in st.session_state.results if 'Cited by' in p.get('citations', ''))
-        col3.metric("Cited Papers", citations_count)
+        with col1:
+            st.metric("Total Papers", len(results))
+        with col2:
+            st.metric("With Links", sum(1 for p in results if p['scholar_link']))
+        with col3:
+            if years:
+                valid_years = [int(y) for y in years if y.isdigit()]
+                if valid_years:
+                    st.metric("Avg Year", f"{sum(valid_years) / len(valid_years):.0f}")
+
+        st.markdown("### All Results Table")
+        df = pd.DataFrame([
+            {
+                'Title': p['title'][:50] + '...' if len(p['title']) > 50 else p['title'],
+                'Authors': p['authors'][:40] + '...' if len(p['authors']) > 40 else p['authors'],
+                'Year': p['year'],
+                'Publication': p['publication'][:30] + '...' if len(p['publication']) > 30 else p['publication']
+            }
+            for p in results
+        ])
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown("### 📚 Citation Formats")
+        st.info("Select a paper to view citations in different formats:")
+
+        selected_paper_idx = st.selectbox(
+            "Choose a paper:",
+            range(len(results)),
+            format_func=lambda x: f"{x+1}. {results[x]['title'][:60]}..."
+        )
+
+        if selected_paper_idx is not None:
+            paper = results[selected_paper_idx]
+            col1, col2 = st.columns(2)
+            with col1:
+                with st.expander("📖 APA Style"):
+                    st.code(format_citation(paper, 'APA'), language="text")
+                with st.expander("📖 MLA Style"):
+                    st.code(format_citation(paper, 'MLA'), language="text")
+            with col2:
+                with st.expander("📖 Chicago Style"):
+                    st.code(format_citation(paper, 'Chicago'), language="text")
+                with st.expander("📖 BibTeX"):
+                    st.code(format_citation(paper, 'BibTeX'), language="text")
 
     with tab3:
-        if st.button("📥 Download PDF", use_container_width=True):
-            try:
-                pdf_buf = io.BytesIO()
-                doc = SimpleDocTemplate(pdf_buf, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
-                story = []
-                styles = getSampleStyleSheet()
+        st.markdown("### Export Options")
 
-                story.append(Paragraph(f"Research: {st.session_state.last_query}", styles['Heading1']))
-                story.append(Spacer(1, 0.3*inch))
+        st.subheader("📑 PDF Report")
+        citation_format = st.radio(
+            "Select citation format:",
+            ["APA", "MLA", "Chicago", "BibTeX"],
+            horizontal=True
+        )
 
-                for i, paper in enumerate(st.session_state.results, 1):
-                    story.append(Paragraph(f"<b>{i}. {paper['title']}</b>", styles['Heading2']))
-                    story.append(Paragraph(f"Credibility Score: {paper.get('credibility', 0)}/100", styles['Normal']))
-                    story.append(Paragraph(f"Authors: {paper['authors']}", styles['Normal']))
-                    story.append(Paragraph(f"Year: {paper['year']} | Publication: {paper['publication']}", styles['Normal']))
-                    if paper.get('abstract') != 'No abstract':
-                        abstract_text = paper['abstract'][:300] + "..." if len(paper['abstract']) > 300 else paper['abstract']
-                        story.append(Paragraph(f"<b>Abstract:</b> {abstract_text}", styles['Normal']))
-                    if paper.get('link'):
-                        story.append(Paragraph(f"<a href='{paper.get('link')}'><u>🔗 View on Scholar</u></a>", styles['Normal']))
-                    story.append(Spacer(1, 0.2*inch))
+        pdf_data = create_pdf_report(results, query, citation_format)
+        if pdf_data:
+            st.download_button(
+                label=f"📥 Download PDF ({citation_format} Citations)",
+                data=pdf_data,
+                file_name=f"research_{query.replace(' ', '_')}_{citation_format}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="pdf_download"
+            )
+            st.success(f"✅ PDF ready with credibility scores, links, and {citation_format} citations!")
 
-                story.append(Spacer(1, 0.3*inch))
-                story.append(Paragraph(f"© Shashank Upadhyay", styles['Normal']))
+        st.subheader("📋 JSON Data")
+        json_data = json.dumps(results, indent=2)
+        st.download_button(
+            label="⬇️ Download JSON",
+            data=json_data,
+            file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            use_container_width=True
+        )
 
-                doc.build(story)
-                pdf_buf.seek(0)
-                st.download_button(label="⬇️ Download PDF", data=pdf_buf, file_name="research.pdf", mime="application/pdf", use_container_width=True)
-                st.success("✅ PDF ready!")
-            except Exception as e:
-                st.error(f"❌ PDF Error: {str(e)}")
+        st.subheader("📊 CSV Spreadsheet")
+        df_export = pd.DataFrame(results)
+        csv_data = df_export.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_data,
+            file_name=f"research_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-        st.divider()
-
-        if st.button("📥 Download JSON", use_container_width=True):
-            json_str = json.dumps(st.session_state.results, indent=2)
-            st.download_button(label="⬇️ Download JSON", data=json_str, file_name="research.json", mime="application/json", use_container_width=True)
-
-        st.divider()
-
-        if st.button("📥 Download CSV", use_container_width=True):
-            csv_data = []
-            for paper in st.session_state.results:
-                csv_data.append({
-                    'Title': paper.get('title', ''),
-                    'Authors': paper.get('authors', ''),
-                    'Year': paper.get('year', ''),
-                    'Publication': paper.get('publication', ''),
-                    'Credibility': paper.get('credibility', 0),
-                    'URL': paper.get('link', '')
-                })
-            csv_str = pd.DataFrame(csv_data).to_csv(index=False)
-            st.download_button(label="⬇️ Download CSV", data=csv_str, file_name="research.csv", mime="text/csv", use_container_width=True)
-
-        st.divider()
-        st.markdown("### 📋 Citation Formats")
-        citation_style = st.radio("Format:", ["APA", "MLA", "Chicago", "BibTeX"], horizontal=True, key="citation_format", label_visibility="collapsed")
-
-        for i, paper in enumerate(st.session_state.results[:3], 1):
-            citation = format_citation(paper, citation_style)
-            st.code(citation, language="text")
+else:
+    st.info("👉 Enter a search query and click **Search** to find papers on Google Scholar")
